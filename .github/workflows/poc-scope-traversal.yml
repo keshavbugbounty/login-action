@@ -48,7 +48,7 @@ jobs:
           scope: ${{ inputs.scope }}
           logout: false
 
-            - name: Verify escaped write
+      - name: Verify escaped write
         id: verify
         shell: bash
         run: |
