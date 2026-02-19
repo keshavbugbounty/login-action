@@ -70,7 +70,7 @@ jobs:
           echo "cfg=$CFG" >> "$GITHUB_OUTPUT"
 
       - name: Upload leaked file (exploit chain proof)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: leaked-docker-config
           path: ${{ steps.verify.outputs.cfg }}/config.json
