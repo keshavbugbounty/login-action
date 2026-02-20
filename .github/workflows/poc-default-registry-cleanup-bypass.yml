@@ -18,22 +18,29 @@ jobs:
           set -euo pipefail
           cmd="$1"; shift || true
           echo "cmd=$cmd DOCKER_CONFIG=${DOCKER_CONFIG:-} args=$*" >> "$RUNNER_TEMP/docker.log"
+
           if [ "$cmd" = "login" ]; then
             cat >/dev/null || true
-            mkdir -p "${DOCKER_CONFIG}"
-            echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+            if [ -n "${DOCKER_CONFIG:-}" ]; then
+              mkdir -p "${DOCKER_CONFIG}"
+              echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+            fi
             exit 0
           fi
+
           if [ "$cmd" = "logout" ]; then
-            rm -f "${DOCKER_CONFIG}/config.json" || true
+            if [ -n "${DOCKER_CONFIG:-}" ]; then
+              rm -f "${DOCKER_CONFIG}/config.json" || true
+            fi
             exit 0
           fi
+
           exit 0
           EOF
           chmod +x "$RUNNER_TEMP/bin/docker"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - name: Main run (no registry input, scope set)
+      - name: Main run (scope set, registry omitted)
         shell: bash
         env:
           INPUT_USERNAME: demo
@@ -43,14 +50,29 @@ jobs:
         run: |
           set -euo pipefail
           node dist/index.js | tee "$RUNNER_TEMP/main.log"
-          sed -n 's/^::save-state name=registries:://p' "$RUNNER_TEMP/main.log" > "$RUNNER_TEMP/state_registries.json"
+
+          echo "---- GITHUB_STATE raw ----"
+          cat "$GITHUB_STATE"
+
+          REG_JSON="$(awk -F'<<ghadelimiter_' '/^registries<<ghadelimiter_/ {flag=1; next} /^ghadelimiter_/ && flag {flag=0} flag {print}' "$GITHUB_STATE" | tr -d '\n')"
+          if [ -z "$REG_JSON" ]; then
+            REG_JSON="$(sed -n 's/^registries=//p' "$GITHUB_STATE" | tail -n1)"
+          fi
+
+          if [ -z "$REG_JSON" ]; then
+            echo "FAILED: could not parse registries from GITHUB_STATE"
+            exit 1
+          fi
+
+          echo "PARSED_STATE_REGISTRIES=$REG_JSON"
+
           {
             echo "STATE_REGISTRIES<<EOF"
-            cat "$RUNNER_TEMP/state_registries.json"
+            echo "$REG_JSON"
             echo "EOF"
           } >> "$GITHUB_ENV"
 
-      - name: Simulate post run
+      - name: Simulate post using captured state
         shell: bash
         env:
           STATE_isPost: "true"
@@ -60,14 +82,20 @@ jobs:
           set -euo pipefail
           node dist/index.js | tee "$RUNNER_TEMP/post.log"
 
-      - name: Validate exploit
+      - name: Validate mismatch (exploit)
         shell: bash
         run: |
           set -euo pipefail
+
+          LOGIN_PATH="$HOME/.docker/buildx/config/registry-1.docker.io/myscope"
+          LOGOUT_PATH="$HOME/.docker/buildx/config/myscope"
+
+          echo "---- docker log ----"
           cat "$RUNNER_TEMP/docker.log"
 
-          grep -q "cmd=login DOCKER_CONFIG=$HOME/.docker/buildx/config/registry-1.docker.io/myscope" "$RUNNER_TEMP/docker.log"
-          grep -q "cmd=logout DOCKER_CONFIG=$HOME/.docker/buildx/config/myscope" "$RUNNER_TEMP/docker.log"
+          grep -Fq "cmd=login DOCKER_CONFIG=${LOGIN_PATH} " "$RUNNER_TEMP/docker.log"
+          grep -Fq "cmd=logout DOCKER_CONFIG=${LOGOUT_PATH} " "$RUNNER_TEMP/docker.log"
 
-          test -f "$HOME/.docker/buildx/config/registry-1.docker.io/myscope/config.json"
-          echo "EXPLOIT CONFIRMED: logout missed the real login config path"
+          test -f "${LOGIN_PATH}/config.json"
+
+          echo "EXPLOIT CONFIRMED: logout used different path than login"
