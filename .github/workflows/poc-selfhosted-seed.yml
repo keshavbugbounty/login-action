@@ -1,0 +1,68 @@
+name: poc-selfhosted-seed
+on:
+  workflow_dispatch:
+
+jobs:
+  seed:
+    runs-on: [self-hosted, linux, lab-runner-1]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install fake docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/docker" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cmd="$1"; shift || true
+          echo "cmd=$cmd DOCKER_CONFIG=${DOCKER_CONFIG:-} args=$*" >> "$RUNNER_TEMP/docker.log"
+
+          if [ "$cmd" = "login" ]; then
+            cat >/dev/null || true
+            mkdir -p "${DOCKER_CONFIG}"
+            echo '{"auths":{"demo":{"auth":"ZGVtbzpkZW1v"}}}' > "${DOCKER_CONFIG}/config.json"
+            exit 0
+          fi
+
+          if [ "$cmd" = "logout" ]; then
+            rm -f "${DOCKER_CONFIG}/config.json" || true
+            exit 0
+          fi
+
+          exit 0
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/docker"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run vulnerable flow (main + post simulation)
+        shell: bash
+        env:
+          INPUT_USERNAME: demo
+          INPUT_PASSWORD: demo
+          INPUT_SCOPE: myscope
+          INPUT_LOGOUT: "true"
+        run: |
+          set -euo pipefail
+
+          LOGIN_PATH="$HOME/.docker/buildx/config/registry-1.docker.io/myscope"
+          LOGOUT_PATH="$HOME/.docker/buildx/config/myscope"
+
+          node dist/index.js | tee "$RUNNER_TEMP/main.log"
+
+          REG_JSON="$(awk -F'<<ghadelimiter_' '/^registries<<ghadelimiter_/ {flag=1; next} /^ghadelimiter_/ && flag {flag=0} flag {print}' "$GITHUB_STATE" | tr -d '\n')"
+          if [ -z "$REG_JSON" ]; then
+            REG_JSON="$(sed -n 's/^registries=//p' "$GITHUB_STATE" | tail -n1)"
+          fi
+
+          STATE_isPost=true STATE_logout=true STATE_registries="$REG_JSON" node dist/index.js | tee "$RUNNER_TEMP/post.log"
+
+          echo "---- docker log ----"
+          cat "$RUNNER_TEMP/docker.log"
+
+          grep -Fq "cmd=login DOCKER_CONFIG=${LOGIN_PATH} " "$RUNNER_TEMP/docker.log"
+          grep -Fq "cmd=logout DOCKER_CONFIG=${LOGOUT_PATH} " "$RUNNER_TEMP/docker.log"
+
+          test -f "${LOGIN_PATH}/config.json"
+          echo "SEED_DONE=${LOGIN_PATH}/config.json"
